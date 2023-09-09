@@ -4,21 +4,13 @@ function script($requests, $region, $token)
 {
    mb_internal_encoding("UTF-8");
    mb_http_output("UTF-8");
-   $array = explode("\n", $requests);
-   foreach ($array as &$line) {
+   $queue = explode("\n", $requests);
+   foreach ($queue as &$line) {
       $line = trim($line);
    }
    unset($line);
-   $batchSize = 50;
-   $numRequests = count($array);
-   $numBatches = ceil($numRequests / $batchSize);
-   $result = [];
-   $result[0] = array('Запрос', 'Частота');
-   for ($batch = 0; $batch < $numBatches; $batch++) {
-      $start = $batch * $batchSize;
-      $batchStrings = array_slice($array, $start, $batchSize);
-      processBatch($batchStrings, $token, $result, $region);
-   }
+   $queue = splitToBatches($queue);
+   $result = processQueue($token, $queue, $region);
    $fp = fopen('phrases.csv', 'wb');
    foreach ($result as $line) {
       fputcsv($fp, $line, ',');
@@ -29,20 +21,20 @@ function script($requests, $region, $token)
    readfile($filename);
    exit();
 }
-function processBatch($batchPhrases, $token, &$result, $geoId = 215, $locale = 'ru')
+
+function processQueue($token, $queue, $region, $locale = 'ru')
 {
-   $batchSize = 10;
-   $numRequests = count($batchPhrases);
-   $numBatches = ceil($numRequests / $batchSize);
-   for ($batch = 0; $batch < $numBatches; $batch++) {
-      $start = $batch * $batchSize;
-      $phrases = array_slice($batchPhrases, $start, $batchSize);
-      createNewWordstatReport($locale, $token, $phrases, $geoId);
-   }
-   $attempts = 0;
-   while ($attempts < 5) {
-      sleep(1);
-      $wordstatReportList = getWordstatReportList($locale, $token);
+   $result = [];
+   $result[0] = array('Запрос', 'Частота');
+   $inWork = 0;
+   while (empty($queue) != true || $inWork != 0) {
+      $count = count(getWordstatReportList($token)->data);
+      while ($count < 5 && count($queue) != 0) {
+         createNewWordstatReport($locale, $token, array_pop($queue), $region);
+         $inWork++;
+         $count++;
+      }
+      $wordstatReportList = getWordstatReportList($token);
       foreach ($wordstatReportList->data as $report) {
          if ($report->StatusReport == 'Done') {
             $response = getWordstatReport($locale, $token, $report->ReportID);
@@ -50,12 +42,14 @@ function processBatch($batchPhrases, $token, &$result, $geoId = 215, $locale = '
                $result[] = array($json->SearchedWith[0]->Phrase, $json->SearchedWith[0]->Shows);
             }
             deleteWordstatReport($locale, $token, $report->ReportID);
+            $inWork--;
          }
       }
-      $attempts++;
    }
+   return $result;
 }
-function getWordstatReportList($locale, $token)
+
+function getWordstatReportList($token, $locale = 'ru')
 {
    $url = 'https://api-sandbox.direct.yandex.ru/live/v4/json/';
    $data = array(
@@ -65,6 +59,19 @@ function getWordstatReportList($locale, $token)
    );
    return handlePost($data, $url);
 }
+function splitToBatches($queue)
+{
+   $result = [];
+   $batchSize = 10;
+   $numRequests = count($queue);
+   $numBatches = ceil($numRequests / $batchSize);
+   for ($batch = 0; $batch < $numBatches; $batch++) {
+      $start = $batch * $batchSize;
+      array_push($result, array_slice($queue, $start, $batchSize));
+   }
+   return $result;
+}
+
 function deleteWordstatReport($locale, $token, $wordstatRepostId)
 {
    $url = 'https://api-sandbox.direct.yandex.ru/live/v4/json/';
